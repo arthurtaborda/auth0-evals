@@ -179,17 +179,29 @@ describe('renderHtml mode toggle', () => {
     expect(html).toContain('class="summary-panel " data-variant="agent"');
   });
 
-  it('summary table rows are models, columns are evals', () => {
+  it('summary table rows are models, with pass-rate and overall-score columns for each eval', () => {
     const results = [
-      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
-      makeResult('swift_quickstart', 'gpt-5.2', 'baseline'),
+      makeResult('react_quickstart', 'gpt-5.2', 'agent', { overall_score: 87.6 }),
+      makeResult('swift_quickstart', 'gpt-5.2', 'agent', { overall_score: 92 }),
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
-    // Model name appears as a row label
     expect(html).toContain('<td class="summary-eval-id">gpt-5.2</td>');
-    // Eval names appear as column headers
     expect(html).toContain('react_quickstart');
     expect(html).toContain('swift_quickstart');
+    expect(html.match(/<th scope="col">Pass rate<\/th>/g)).toHaveLength(2);
+    expect(html.match(/<th scope="col">Overall score<\/th>/g)).toHaveLength(2);
+    expect(html).toContain('<td class="overall-score-cell">87.6</td>');
+    expect(html).toContain('<td class="overall-score-cell">92.0</td>');
+  });
+
+  it('shows an empty overall-score cell when the result has no overall score', () => {
+    const html = renderHtml([makeResult()], '2024-01-01 00:00');
+    expect(html).toMatch(/<td class="pct-cell">[\s\S]*?<td class="empty-cell">&mdash;<\/td>/);
+  });
+
+  it('renders a zero overall score instead of treating it as missing', () => {
+    const html = renderHtml([makeResult('react_quickstart', 'gpt-5.2', 'agent', { overall_score: 0 })], 'date');
+    expect(html).toContain('<td class="overall-score-cell">0.0</td>');
   });
 });
 
