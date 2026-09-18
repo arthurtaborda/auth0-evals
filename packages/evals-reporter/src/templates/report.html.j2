@@ -43,11 +43,17 @@
   <table class="summary-table">
     <thead>
       <tr>
-        <th class="summary-eval-heading">Model</th>
+        <th class="summary-eval-heading" rowspan="2" scope="col">Model</th>
         {% for eval_id in evals_run %}
-        <th class="summary-column-heading">
+        <th class="summary-column-heading" colspan="2" scope="colgroup">
           <div class="summary-column-model">{{ eval_id }}</div>
         </th>
+        {% endfor %}
+      </tr>
+      <tr class="summary-metric-headings">
+        {% for eval_id in evals_run %}
+        <th scope="col">Pass rate</th>
+        <th scope="col">Overall score</th>
         {% endfor %}
       </tr>
     </thead>
@@ -61,6 +67,11 @@
             {% set d = mode_deltas[eval_id][model] if mode_deltas[eval_id] and mode_deltas[eval_id][model] is not none else none %}
             {% set c = result.cost_usd if result.cost_usd else none %}
             {{ pct_cell(result.grader_pass_rate, d, c) }}
+          {% else %}
+            {{ empty_cell() }}
+          {% endif %}
+          {% if result and result.overall_score is defined and result.overall_score is not none %}
+            <td class="overall-score-cell">{{ "%.1f" | format(result.overall_score) }}</td>
           {% else %}
             {{ empty_cell() }}
           {% endif %}
