@@ -27,6 +27,12 @@ Most consumers generate reports via the CLI instead:
 a0-eval report --input scores-latest.json --output report.html
 ```
 
+## Generated dashboard
+
+The self-contained report opens as a responsive analytics workspace with summary KPIs, a variant-aware pass-rate matrix, and a searchable run explorer. The shared variant selector updates both views; eval and model filters narrow the explorer, and each result expands to show its graders, score dimensions, judge output, metrics, trace, recommendations, or error details.
+
+Reports default to a light Auth0-inspired theme and include a persistent dark-theme toggle. All styles and behavior are embedded in the HTML, so generated reports do not require network access or external assets.
+
 See the [monorepo README](https://github.com/auth0/auth0-evals) for the full framework guide.
 
 ## License

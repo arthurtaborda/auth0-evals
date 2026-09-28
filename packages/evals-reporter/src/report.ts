@@ -35,9 +35,18 @@ export function renderHtml(results: Record<string, unknown>[], generatedAt: stri
   const deltas = computeDeltas(variantGrouped);
 
   const totalRuns = results.length;
+  const passRates = results
+    .map((result) => result.grader_pass_rate)
+    .filter((rate) => rate != null)
+    .map(Number)
+    .filter((rate) => Number.isFinite(rate));
+  const averagePassRate = passRates.length > 0 ? passRates.reduce((sum, rate) => sum + rate, 0) / passRates.length : 0;
   const totalCost = results.reduce((sum, r) => sum + Number(r.cost_usd ?? 0), 0);
   const totalJudgeCost = results.reduce((sum, r) => sum + Number(r.judge_cost_usd ?? 0), 0);
-  const grandTotalCost = results.reduce((sum, r) => sum + Number(r.total_cost_usd ?? r.cost_usd ?? 0), 0);
+  const grandTotalCost = results.reduce(
+    (sum, r) => sum + Number(r.total_cost_usd ?? Number(r.cost_usd ?? 0) + Number(r.judge_cost_usd ?? 0)),
+    0,
+  );
   const modelsRun = [...new Set(results.map((r) => r.model as string))].sort();
   const variantsRun = [...new Set(results.map(resultVariant))];
   const evalsRun = [...new Set(results.map((r) => r.eval_id as string))].sort();
@@ -62,6 +71,8 @@ export function renderHtml(results: Record<string, unknown>[], generatedAt: stri
     variant_grouped: variantGrouped,
     deltas,
     total_runs: totalRuns,
+    average_pass_rate: averagePassRate,
+    scored_run_count: passRates.length,
     total_cost: totalCost,
     total_judge_cost: totalJudgeCost,
     grand_total_cost: grandTotalCost,

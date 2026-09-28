@@ -145,28 +145,31 @@ describe('renderHtml CSS class integration', () => {
   });
 });
 
-// ── Mode toggle and summary panel tests ──────────────────────────────────────
+// ── Unified variant selector and comparison matrix tests ─────────────────────
 
-describe('renderHtml mode toggle', () => {
-  it('renders variant toggle buttons for each variant present', () => {
+describe('renderHtml variant selector', () => {
+  it('renders one labelled selector for all variants', () => {
     const results = [
       makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
       makeResult('react_quickstart', 'gpt-5.2', 'agent'),
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
-    expect(html).toContain('class="mode-toggle-btn active" data-variant="baseline"');
-    expect(html).toContain('data-variant="agent"');
+    expect(html).toContain('<label for="filter-variant">Variant</label>');
+    expect(html).toContain('<select id="filter-variant"');
+    expect(html).toContain('<option value="baseline">baseline</option>');
+    expect(html).toContain('<option value="agent">agent</option>');
+    const body = html.slice(html.indexOf('</style>'));
+    expect(body).not.toContain('mode-toggle-btn');
   });
 
-  it('renders agent+Skills as a separate toggle button', () => {
+  it('renders agent+Skills as a separate selector option', () => {
     const results = [
       makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
       makeResult('react_quickstart', 'gpt-5.2', 'agent', { tools: ['Skills'] }),
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
-    expect(html).toContain('data-variant="baseline"');
-    expect(html).toContain('data-variant="agent+Skills"');
-    expect(html).not.toContain('data-variant="agent"');
+    expect(html).toContain('<option value="baseline">baseline</option>');
+    expect(html).toContain('<option value="agent+Skills">agent+Skills</option>');
   });
 
   it('renders one summary panel per variant', () => {
@@ -176,18 +179,17 @@ describe('renderHtml mode toggle', () => {
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
     expect(html).toContain('class="summary-panel active" data-variant="baseline"');
-    expect(html).toContain('class="summary-panel " data-variant="agent"');
+    expect(html).toContain('class="summary-panel" data-variant="agent" hidden');
   });
 
-  it('summary table rows are models, columns are evals', () => {
+  it('uses semantic model row headers and eval column headers', () => {
     const results = [
       makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
       makeResult('swift_quickstart', 'gpt-5.2', 'baseline'),
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
-    // Model name appears as a row label
-    expect(html).toContain('<td class="summary-eval-id">gpt-5.2</td>');
-    // Eval names appear as column headers
+    expect(html).toContain('<th class="summary-eval-id" scope="row">gpt-5.2</th>');
+    expect(html).toContain('class="summary-column-heading" scope="col"');
     expect(html).toContain('react_quickstart');
     expect(html).toContain('swift_quickstart');
   });
@@ -227,30 +229,133 @@ describe('renderHtml delta badges', () => {
   });
 });
 
-// ── Detail section tests ──────────────────────────────────────────────────────
+// ── Dashboard hierarchy and run explorer tests ───────────────────────────────
 
-describe('renderHtml detail section', () => {
-  it('renders detail cards with mode badges', () => {
+describe('renderHtml analytics workspace', () => {
+  it('renders the report hierarchy and summary KPIs', () => {
     const results = [
-      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
-      makeResult('react_quickstart', 'gpt-5.2', 'agent'),
+      makeResult('react_quickstart', 'gpt-5.2', 'baseline', {
+        grader_pass_rate: 0.5,
+        total_cost_usd: 0.03,
+        judge_cost_usd: 0.01,
+      }),
+      makeResult('swift_quickstart', 'claude-sonnet-4-6', 'baseline', {
+        grader_pass_rate: 1,
+        total_cost_usd: 0.02,
+        judge_cost_usd: 0.005,
+      }),
     ];
     const html = renderHtml(results, '2024-01-01 00:00');
-    expect(html).toContain('class="mode-badge"');
-    expect(html).toContain('detail-section-title');
+    expect(html).toContain('<main class="dashboard-shell">');
+    expect(html).toContain('aria-label="Report summary"');
+    expect(html).toContain('<span>Runs</span><strong>2</strong>');
+    expect(html).toContain('<span>Average pass rate</span><strong>75%</strong>');
+    expect(html).toContain('<span>Total cost</span><strong>$0.0500</strong>');
+    expect(html).toContain('<span>Models</span><strong>2</strong>');
+    expect(html).toContain('id="comparison-title">Pass-rate comparison');
+    expect(html).toContain('id="explorer-title">Run explorer');
   });
 
-  it('renders all mode cards in a flat list per eval', () => {
-    const results = [
-      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
-      makeResult('react_quickstart', 'gpt-5.2', 'agent'),
-    ];
-    const html = renderHtml(results, '2024-01-01 00:00');
-    // Both modes should appear as mode badges in the same section (no tabs)
-    const body = html.slice(html.indexOf('</style>'));
-    const badgeMatches = body.match(/class="mode-badge"/g);
-    expect(badgeMatches).not.toBeNull();
-    expect(badgeMatches!.length).toBeGreaterThanOrEqual(2);
+  it('labels average pass rate as covering only scored runs', () => {
+    const html = renderHtml(
+      [
+        makeResult('react_quickstart', 'gpt-5.2', 'baseline', { grader_pass_rate: 1 }),
+        makeResult('swift_quickstart', 'gpt-5.2', 'baseline', {
+          status: 'error',
+          grader_pass_rate: undefined,
+        }),
+      ],
+      '2024-01-01 00:00',
+    );
+    expect(html).toContain('<span>Average pass rate</span><strong>100%</strong><small>across 1 scored run</small>');
+  });
+
+  it('renders searchable eval and model controls with a live result count', () => {
+    const html = renderHtml([makeResult()], '2024-01-01 00:00');
+    expect(html).toContain('role="search" aria-label="Filter runs"');
+    expect(html).toContain('for="filter-search">Search runs</label>');
+    expect(html).toContain('id="filter-eval"');
+    expect(html).toContain('id="filter-model"');
+    expect(html).toContain('id="result-count" class="result-count" aria-live="polite"');
+    expect(html).toContain('id="clear-filters"');
+    expect(html).toContain('No runs match these filters.');
+  });
+
+  it('renders native expandable diagnostics with all recorded detail types', () => {
+    const html = renderHtml(
+      [
+        makeResult('react_quickstart', 'gpt-5.2', 'baseline', {
+          graders_passed: 2,
+          graders_total: 2,
+          graders: [
+            { kind: 'contains', name: 'Uses Auth0Provider', passed: true, detail: 'found' },
+            { kind: 'judge', name: 'Is the integration complete?', passed: true, detail: 'Judge (test): Yes.' },
+          ],
+          dimensions: [{ name: 'correctness', score: 90, weight: 0.25, grade: 'A' }],
+          overall_score: 90,
+          overall_grade: 'A',
+          turn_metrics: [
+            {
+              turn: 1,
+              input_tokens: 10,
+              output_tokens: 5,
+              llm_latency: 1.2,
+              cost_usd: 0.001,
+              finish_reason: 'stop',
+              tool_call_count: 1,
+            },
+          ],
+          session_trace: [
+            {
+              step: 1,
+              actionType: 'implementation',
+              tool: 'write',
+              args: { path: 'src/App.tsx' },
+              duration: 0.2,
+            },
+          ],
+          recommendations: {
+            summary: 'One improvement',
+            recommendations: [
+              { category: 'efficiency', severity: 'low', issue: 'Extra step', suggestion: 'Combine it' },
+            ],
+          },
+        }),
+      ],
+      '2024-01-01 00:00',
+    );
+    expect(html).toContain('<details class="run-card">');
+    expect(html).toContain('<summary class="run-summary">');
+    expect(html).toContain('aria-label="Score dimensions"');
+    expect(html).toContain('<h4>Graders');
+    expect(html).toContain('<h4>Judge</h4>');
+    expect(html).toContain('<h4>Turn metrics</h4>');
+    expect(html).toContain('<h4>Session trace</h4>');
+    expect(html).toContain('<h4>Recommendations</h4>');
+    expect(html).toContain('Uses Auth0Provider');
+    expect(html).toContain('One improvement');
+  });
+
+  it('renders prominent escaped error diagnostics', () => {
+    const html = renderHtml(
+      [makeResult('react_quickstart', 'gpt-5.2', 'baseline', { status: 'error', error: '<unsafe>failed</unsafe>' })],
+      '2024-01-01 00:00',
+    );
+    expect(html).toContain('class="run-card run-card--error"');
+    expect(html).toContain('<h4>Error details</h4>');
+    expect(html).toContain('&lt;unsafe&gt;failed&lt;/unsafe&gt;');
+    expect(html).not.toContain('<unsafe>failed</unsafe>');
+  });
+
+  it('includes theme, matrix, and expandable-control accessibility labels', () => {
+    const html = renderHtml([makeResult()], '2024-01-01 00:00');
+    expect(html).toContain('id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false"');
+    expect(html).toContain('aria-label="Scrollable pass-rate comparison matrix"');
+    expect(html).toContain('<caption class="sr-only">Grader pass rates');
+    expect(html).toContain('<span class="sr-only">Successful run:</span>');
+    expect(html).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(html).toContain('.filter-group:focus-within');
+    expect(html).toContain('details:not([open]) > .run-diagnostics');
   });
 });
 
