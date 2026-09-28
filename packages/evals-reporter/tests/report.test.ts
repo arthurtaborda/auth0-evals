@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { loadScores, renderHtml, groupByVariant, computeDeltas, resultVariant } from '../src/report.js';
 import { makeTmpDir } from './tmp.js';
 
@@ -26,6 +27,181 @@ function makeResult(
     grader_pass_rate: 1.0,
     cost_usd: 0.01,
     ...overrides,
+  };
+}
+
+class MockClassList {
+  private readonly values: Set<string>;
+
+  constructor(classNames = '') {
+    this.values = new Set(classNames.split(/\s+/).filter(Boolean));
+  }
+
+  contains(className: string): boolean {
+    return this.values.has(className);
+  }
+
+  toggle(className: string, force?: boolean): boolean {
+    const active = force ?? !this.values.has(className);
+    if (active) this.values.add(className);
+    else this.values.delete(className);
+    return active;
+  }
+}
+
+class MockElement {
+  value = '';
+  hidden = false;
+  textContent = '';
+  focused = false;
+  readonly dataset: Record<string, string> = {};
+  readonly classList: MockClassList;
+  parentSection?: MockElement;
+  sectionCards: MockElement[] = [];
+  themeLabel?: MockElement;
+  private readonly attributes = new Map<string, string>();
+  private readonly listeners = new Map<string, Array<() => void>>();
+
+  constructor(classNames = '') {
+    this.classList = new MockClassList(classNames);
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener();
+  }
+
+  closest(selector: string): MockElement | null {
+    return selector === '.detail-section' ? (this.parentSection ?? null) : null;
+  }
+
+  querySelector(selector: string): MockElement | null {
+    if (selector === '.detail-card-wrap:not([hidden])') {
+      return this.sectionCards.find((card) => !card.hidden) ?? null;
+    }
+    if (selector === '.theme-toggle-label') return this.themeLabel ?? null;
+    return null;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  focus(): void {
+    this.focused = true;
+  }
+}
+
+class MockStorage {
+  private readonly values = new Map<string, string>();
+
+  constructor(theme?: string) {
+    if (theme) this.values.set('auth0-evals-theme', theme);
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
+class MockDocument {
+  readonly documentElement = new MockElement();
+
+  constructor(
+    private readonly elements: Map<string, MockElement>,
+    readonly cards: MockElement[],
+    readonly sections: MockElement[],
+    readonly panels: MockElement[],
+  ) {}
+
+  getElementById(id: string): MockElement {
+    const element = this.elements.get(id);
+    if (!element) throw new Error(`Missing mock element: ${id}`);
+    return element;
+  }
+
+  querySelectorAll(selector: string): MockElement[] {
+    if (selector === '.detail-card-wrap') return this.cards;
+    if (selector === '.detail-section') return this.sections;
+    if (selector === '.summary-panel') return this.panels;
+    throw new Error(`Unsupported mock selector: ${selector}`);
+  }
+}
+
+function runReportClient(results: Record<string, unknown>[], storedTheme?: string) {
+  const html = renderHtml(results, '2024-01-01 00:00');
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  const finalScript = scripts.at(-1);
+  if (!scripts[0] || !finalScript) throw new Error('Expected embedded report scripts');
+
+  const panels = [...html.matchAll(/<div class="summary-panel([^"]*)" data-variant="([^"]+)"([^>]*)>/g)].map(
+    (match) => {
+      const panel = new MockElement(`summary-panel${match[1]}`);
+      panel.dataset.variant = match[2] ?? '';
+      panel.hidden = (match[3] ?? '').includes('hidden');
+      return panel;
+    },
+  );
+  const sections = [...new Set(results.map((result) => String(result.eval_id)))].sort().map((evalId) => {
+    const section = new MockElement('detail-section');
+    section.dataset.eval = evalId;
+    return section;
+  });
+  const sectionsByEval = new Map(sections.map((section) => [section.dataset.eval, section]));
+  const cards = results.map((result) => {
+    const card = new MockElement('detail-card-wrap');
+    card.dataset.model = String(result.model);
+    card.dataset.variant = resultVariant(result);
+    card.textContent = `${String(result.eval_id)} ${String(result.model)} ${JSON.stringify(result)}`;
+    card.parentSection = sectionsByEval.get(String(result.eval_id));
+    card.parentSection?.sectionCards.push(card);
+    return card;
+  });
+
+  const themeToggle = new MockElement('theme-toggle');
+  themeToggle.setAttribute('aria-label', 'Use dark theme');
+  themeToggle.setAttribute('aria-pressed', 'false');
+  themeToggle.themeLabel = new MockElement('theme-toggle-label');
+  themeToggle.themeLabel.textContent = 'Dark';
+
+  const elements = new Map<string, MockElement>();
+  const addElement = (id: string, element = new MockElement()): MockElement => {
+    elements.set(id, element);
+    return element;
+  };
+  addElement('filter-variant').value = panels[0]?.dataset.variant ?? '';
+  addElement('filter-eval').value = '__all__';
+  addElement('filter-model').value = '__all__';
+  addElement('filter-search');
+  addElement('result-count').textContent = '0 runs';
+  const emptyResults = addElement('empty-results');
+  emptyResults.hidden = true;
+  addElement('theme-toggle', themeToggle);
+  addElement('clear-filters', new MockElement('clear-filters'));
+
+  const document = new MockDocument(elements, cards, sections, panels);
+  const localStorage = new MockStorage(storedTheme);
+  const context = { document, localStorage };
+  runInNewContext(scripts[0], context);
+  runInNewContext(finalScript, context);
+
+  return {
+    document,
+    localStorage,
+    element: (id: string) => document.getElementById(id),
   };
 }
 
@@ -356,6 +532,113 @@ describe('renderHtml analytics workspace', () => {
     expect(html).toContain('@media (prefers-reduced-motion: reduce)');
     expect(html).toContain('.filter-group:focus-within');
     expect(html).toContain('details:not([open]) > .run-diagnostics');
+  });
+});
+
+// ── Embedded client behavior tests ───────────────────────────────────────────
+
+describe('renderHtml embedded client', () => {
+  it('initially filters run cards to the first variant and updates the result count', () => {
+    const harness = runReportClient([
+      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
+      makeResult('swift_quickstart', 'claude-sonnet-4-6', 'baseline'),
+      makeResult('react_quickstart', 'gpt-5.2', 'agent'),
+    ]);
+
+    expect(harness.element('filter-variant').value).toBe('baseline');
+    expect(harness.document.cards.map((card) => card.hidden)).toEqual([false, false, true]);
+    expect(harness.element('result-count').textContent).toBe('2 runs');
+    expect(harness.element('empty-results').hidden).toBe(true);
+  });
+
+  it('switches the visible summary panel and run cards with the selected variant', () => {
+    const harness = runReportClient([
+      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
+      makeResult('react_quickstart', 'gpt-5.2', 'agent'),
+    ]);
+    const variant = harness.element('filter-variant');
+
+    variant.value = 'agent';
+    variant.dispatch('change');
+
+    const [baselinePanel, agentPanel] = harness.document.panels;
+    expect(baselinePanel?.hidden).toBe(true);
+    expect(baselinePanel?.classList.contains('active')).toBe(false);
+    expect(agentPanel?.hidden).toBe(false);
+    expect(agentPanel?.classList.contains('active')).toBe(true);
+    expect(harness.document.cards.map((card) => card.hidden)).toEqual([true, false]);
+    expect(harness.element('result-count').textContent).toBe('1 run');
+  });
+
+  it('combines eval, model, and search filters and controls section and empty-state visibility', () => {
+    const harness = runReportClient([
+      makeResult('react_quickstart', 'gpt-5.2', 'baseline', {
+        graders: [{ name: 'Unique provider check', passed: true }],
+      }),
+      makeResult('react_quickstart', 'claude-sonnet-4-6', 'baseline'),
+      makeResult('swift_quickstart', 'gpt-5.2', 'baseline'),
+    ]);
+    const evalFilter = harness.element('filter-eval');
+    const modelFilter = harness.element('filter-model');
+    const searchFilter = harness.element('filter-search');
+
+    evalFilter.value = 'react_quickstart';
+    evalFilter.dispatch('change');
+    modelFilter.value = 'gpt-5.2';
+    modelFilter.dispatch('change');
+    searchFilter.value = 'PROVIDER CHECK';
+    searchFilter.dispatch('input');
+
+    expect(harness.document.cards.map((card) => card.hidden)).toEqual([false, true, true]);
+    expect(harness.document.sections.map((section) => section.hidden)).toEqual([false, true]);
+    expect(harness.element('result-count').textContent).toBe('1 run');
+
+    searchFilter.value = 'does-not-exist';
+    searchFilter.dispatch('input');
+    expect(harness.document.sections.every((section) => section.hidden)).toBe(true);
+    expect(harness.element('result-count').textContent).toBe('0 runs');
+    expect(harness.element('empty-results').hidden).toBe(false);
+  });
+
+  it('clears eval, model, and search filters and returns focus to search', () => {
+    const harness = runReportClient([
+      makeResult('react_quickstart', 'gpt-5.2', 'baseline'),
+      makeResult('swift_quickstart', 'claude-sonnet-4-6', 'baseline'),
+    ]);
+    const evalFilter = harness.element('filter-eval');
+    const modelFilter = harness.element('filter-model');
+    const searchFilter = harness.element('filter-search');
+
+    evalFilter.value = 'react_quickstart';
+    modelFilter.value = 'gpt-5.2';
+    searchFilter.value = 'missing';
+    searchFilter.dispatch('input');
+    harness.element('clear-filters').dispatch('click');
+
+    expect(evalFilter.value).toBe('__all__');
+    expect(modelFilter.value).toBe('__all__');
+    expect(searchFilter.value).toBe('');
+    expect(searchFilter.focused).toBe(true);
+    expect(harness.document.cards.every((card) => !card.hidden)).toBe(true);
+    expect(harness.element('result-count').textContent).toBe('2 runs');
+    expect(harness.element('empty-results').hidden).toBe(true);
+  });
+
+  it('restores and persists theme changes', () => {
+    const harness = runReportClient([makeResult()], 'dark');
+    const themeToggle = harness.element('theme-toggle');
+
+    expect(harness.document.documentElement.dataset.theme).toBe('dark');
+    expect(themeToggle.getAttribute('aria-pressed')).toBe('true');
+    expect(themeToggle.getAttribute('aria-label')).toBe('Use light theme');
+    expect(themeToggle.themeLabel?.textContent).toBe('Light');
+
+    themeToggle.dispatch('click');
+    expect(harness.document.documentElement.dataset.theme).toBeUndefined();
+    expect(themeToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(themeToggle.getAttribute('aria-label')).toBe('Use dark theme');
+    expect(themeToggle.themeLabel?.textContent).toBe('Dark');
+    expect(harness.localStorage.getItem('auth0-evals-theme')).toBe('light');
   });
 });
 
